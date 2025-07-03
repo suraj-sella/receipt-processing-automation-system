@@ -178,3 +178,48 @@ Return your answer as a JSON object with keys: merchant_name, total_amount, date
         return json.loads(content)
     except Exception as e:
         return {"merchant_name": None, "total_amount": None, "date": None, "error": str(e)}
+
+@router.get("/receipts")
+def list_receipts():
+    """
+    List all receipts stored in the database.
+    """
+    db = SessionLocal()
+    try:
+        receipts = db.query(Receipt).all()
+        result = []
+        for r in receipts:
+            result.append({
+                "id": r.id,
+                "purchased_at": r.purchased_at,
+                "merchant_name": r.merchant_name,
+                "total_amount": r.total_amount,
+                "file_path": r.file_path,
+                "created_at": r.created_at,
+                "updated_at": r.updated_at
+            })
+        return result
+    finally:
+        db.close()
+
+@router.get("/receipts/{receipt_id}")
+def get_receipt(receipt_id: int):
+    """
+    Retrieve details of a specific receipt by its ID.
+    """
+    db = SessionLocal()
+    try:
+        r = db.query(Receipt).filter(Receipt.id == receipt_id).first()
+        if not r:
+            raise HTTPException(status_code=404, detail="Receipt not found")
+        return {
+            "id": r.id,
+            "purchased_at": r.purchased_at,
+            "merchant_name": r.merchant_name,
+            "total_amount": r.total_amount,
+            "file_path": r.file_path,
+            "created_at": r.created_at,
+            "updated_at": r.updated_at
+        }
+    finally:
+        db.close()

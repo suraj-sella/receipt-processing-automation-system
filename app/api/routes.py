@@ -1,9 +1,21 @@
+"""API routes for receipt processing application."""
 from fastapi import APIRouter, UploadFile, File, HTTPException, Body
 from app.models.receipt_file import ReceiptFile
 from app.utils.database import SessionLocal
 import os
 from datetime import datetime
 from PyPDF2 import PdfReader
+from pdf2image import convert_from_path
+import pytesseract
+from PIL import Image
+import io
+from dotenv import load_dotenv
+load_dotenv()
+from openai import OpenAI
+from app.models.receipt import Receipt
+
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
 
 router = APIRouter()
 
@@ -77,3 +89,83 @@ def validate_file(file_id: int = Body(..., embed=True)):
         }
     finally:
         db.close()
+
+def extract_text_from_pdf_with_ocr(pdf_path):
+    images = convert_from_path(pdf_path)
+    text = ""
+    for image in images:
+        text += pytesseract.image_to_string(image)
+    return text
+
+@router.post("/process")
+def process_file(file_id: int = Body(..., embed=True)):
+    """
+    Extract receipt details using OCR and store in the database.
+    """
+    db = SessionLocal()
+    try:
+        db_file = db.query(ReceiptFile).filter(ReceiptFile.id == file_id).first()
+        if not db_file or not db_file.is_valid:
+            raise HTTPException(status_code=404, detail="Valid file not found")
+        
+        # Extract text from PDF using OCR (Tesseract)
+        try:
+            text = extract_text_from_pdf_with_ocr(db_file.file_path)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"OCR failed: {e}")
+
+        # Use OpenAI (or your existing function) to extract structured fields
+        fields = extract_with_gpt(text)
+        merchant = fields.get("merchant_name")
+        total = fields.get("total_amount")
+        date = fields.get("date")
+
+        # Store in receipt table
+        receipt = Receipt(
+            purchased_at=None,  # You can parse date if you want
+            merchant_name=merchant,
+            total_amount=total,
+            file_path=db_file.file_path
+        )
+        db.add(receipt)
+        db_file.is_processed = True
+        db.commit()
+        db.refresh(receipt)
+
+        return {
+            "receipt_id": receipt.id,
+            "merchant_name": merchant,
+            "total_amount": total,
+            "raw_text": text[:500]  # Show a snippet of extracted text
+        }
+    finally:
+        db.close()
+        
+def extract_with_gpt(raw_text):
+    prompt = f"""
+You are an intelligent receipt parser. Extract the following fields from the receipt text below:
+- merchant_name
+- total_amount
+- date (if available)
+
+If a field is missing, return null for it.
+
+Receipt text:
+\"\"\"
+{raw_text}
+\"\"\"
+
+Return your answer as a JSON object with keys: merchant_name, total_amount, date.
+"""
+    response = client.chat.completions.create(
+        model="gpt-3.5-turbo",
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=200,
+        temperature=0
+    )
+    import json
+    try:
+        content = response.choices[0].message.content
+        return json.loads(content)
+    except Exception as e:
+        return {"merchant_name": None, "total_amount": None, "date": None, "error": str(e)}

@@ -23,6 +23,7 @@ router = APIRouter()
 async def upload_file(file: UploadFile = File(...)):
     """
     Upload a receipt file (PDF format)
+    If a file with the same name exists, update the existing record instead of creating a duplicate.
     """
     # Check if file is PDF
     if not file.filename.lower().endswith('.pdf'):
@@ -34,28 +35,49 @@ async def upload_file(file: UploadFile = File(...)):
     
     # Save the file
     file_path = os.path.join(upload_dir, file.filename)
-    with open(file_path, "wb") as buffer:
-        content = await file.read()
-        buffer.write(content)
+    content = await file.read()
     
-    # Save to database
     db = SessionLocal()
     try:
-        db_receipt_file = ReceiptFile(
-            file_name=file.filename,
-            file_path=file_path,
-            is_valid=False,  # We'll validate this later
-            is_processed=False
-        )
-        db.add(db_receipt_file)
-        db.commit()
-        db.refresh(db_receipt_file)
-        
-        return {
-            "message": "File uploaded successfully",
-            "file_id": db_receipt_file.id,
-            "file_name": file.filename
-        }
+        existing = db.query(ReceiptFile).filter(ReceiptFile.file_name == file.filename).first()
+        if existing:
+            # Update the existing record
+            existing.file_path = file_path
+            existing.is_valid = False
+            existing.invalid_reason = None if existing.invalid_reason is not None else None
+            existing.is_processed = False
+            existing.updated_at = datetime.utcnow()
+            db.commit()
+            db.refresh(existing)
+            # Overwrite the file on disk
+            with open(file_path, "wb") as buffer:
+                buffer.write(content)
+            return {
+                "message": "Duplicate file uploaded, existing record updated",
+                "file_id": existing.id,
+                "file_name": file.filename
+            }
+        else:
+            # Save new file and record
+            with open(file_path, "wb") as buffer:
+                buffer.write(content)
+            db_receipt_file = ReceiptFile(
+                file_name=file.filename,
+                file_path=file_path,
+                is_valid=False,
+                is_processed=False,
+                invalid_reason=None,
+                created_at=datetime.utcnow(),
+                updated_at=datetime.utcnow()
+            )
+            db.add(db_receipt_file)
+            db.commit()
+            db.refresh(db_receipt_file)
+            return {
+                "message": "File uploaded successfully",
+                "file_id": db_receipt_file.id,
+                "file_name": file.filename
+            }
     finally:
         db.close()
 
@@ -129,17 +151,30 @@ def process_file(file_id: int = Body(..., embed=True)):
         total = parse_amount(fields.get("total_amount"))
         date = fields.get("date")
 
-        # Store in receipt table
-        receipt = Receipt(
-            purchased_at=None,  # You can parse date if you want
-            merchant_name=merchant,
-            total_amount=total,
-            file_path=db_file.file_path
-        )
-        db.add(receipt)
-        db_file.is_processed = True
-        db.commit()
-        db.refresh(receipt)
+        # Check for existing receipt for this file
+        existing_receipt = db.query(Receipt).filter(Receipt.file_path == db_file.file_path).first()
+        if existing_receipt:
+            # Update the existing receipt
+            existing_receipt.purchased_at = None  # Update if you parse date
+            existing_receipt.merchant_name = merchant
+            existing_receipt.total_amount = total
+            existing_receipt.updated_at = datetime.utcnow()
+            db_file.is_processed = True
+            db.commit()
+            db.refresh(existing_receipt)
+            receipt = existing_receipt
+        else:
+            # Create a new receipt
+            receipt = Receipt(
+                purchased_at=None,  # You can parse date if you want
+                merchant_name=merchant,
+                total_amount=total,
+                file_path=db_file.file_path
+            )
+            db.add(receipt)
+            db_file.is_processed = True
+            db.commit()
+            db.refresh(receipt)
 
         return {
             "receipt_id": receipt.id,

@@ -128,6 +128,16 @@ def parse_amount(amount):
     except Exception:
         return None
 
+def parse_date(date_str):
+    if not date_str:
+        return None
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y"):
+        try:
+            return datetime.strptime(date_str, fmt)
+        except Exception:
+            continue
+    return None
+
 @router.post("/process")
 def process_file(file_id: int = Body(..., embed=True)):
     """
@@ -149,13 +159,14 @@ def process_file(file_id: int = Body(..., embed=True)):
         fields = extract_with_gpt(text)
         merchant = fields.get("merchant_name")
         total = parse_amount(fields.get("total_amount"))
-        date = fields.get("date")
+        date_str = fields.get("date")
+        purchased_at = parse_date(date_str)
 
         # Check for existing receipt for this file
         existing_receipt = db.query(Receipt).filter(Receipt.file_path == db_file.file_path).first()
         if existing_receipt:
             # Update the existing receipt
-            existing_receipt.purchased_at = None  # Update if you parse date
+            existing_receipt.purchased_at = purchased_at
             existing_receipt.merchant_name = merchant
             existing_receipt.total_amount = total
             existing_receipt.updated_at = datetime.utcnow()
@@ -166,7 +177,7 @@ def process_file(file_id: int = Body(..., embed=True)):
         else:
             # Create a new receipt
             receipt = Receipt(
-                purchased_at=None,  # You can parse date if you want
+                purchased_at=purchased_at,
                 merchant_name=merchant,
                 total_amount=total,
                 file_path=db_file.file_path
@@ -180,6 +191,7 @@ def process_file(file_id: int = Body(..., embed=True)):
             "receipt_id": receipt.id,
             "merchant_name": merchant,
             "total_amount": total,
+            "purchased_at": purchased_at,
             "raw_text": text[:500]  # Show a snippet of extracted text
         }
     finally:
@@ -188,9 +200,9 @@ def process_file(file_id: int = Body(..., embed=True)):
 def extract_with_gpt(raw_text):
     prompt = f"""
 You are an intelligent receipt parser. Extract the following fields from the receipt text below:
-- merchant_name
-- total_amount
-- date (if available)
+- merchant_name: The name of the business.
+- total_amount: The final total amount billed or paid.
+- date: The date of purchase, in ISO format (YYYY-MM-DD), or null if not found.
 
 If a field is missing, return null for it.
 

@@ -97,6 +97,15 @@ def extract_text_from_pdf_with_ocr(pdf_path):
         text += pytesseract.image_to_string(image)
     return text
 
+def parse_amount(amount):
+    if amount is None:
+        return None
+    try:
+        # Remove $ and spaces, then convert to float
+        return float(str(amount).replace('$', '').replace(',', '').strip())
+    except Exception:
+        return None
+
 @router.post("/process")
 def process_file(file_id: int = Body(..., embed=True)):
     """
@@ -117,7 +126,7 @@ def process_file(file_id: int = Body(..., embed=True)):
         # Use OpenAI (or your existing function) to extract structured fields
         fields = extract_with_gpt(text)
         merchant = fields.get("merchant_name")
-        total = fields.get("total_amount")
+        total = parse_amount(fields.get("total_amount"))
         date = fields.get("date")
 
         # Store in receipt table

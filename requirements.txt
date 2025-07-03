@@ -1,0 +1,25 @@
+# Core web framework
+fastapi
+uvicorn
+
+# Database
+sqlalchemy
+
+# Data validation
+pydantic
+
+# File handling
+python-multipart
+
+# OCR and AI
+pytesseract
+openai
+
+# Environment variables
+python-dotenv
+
+# Testing
+pytest
+
+# PDF processing
+PyPDF2
